@@ -1,4 +1,3 @@
-package com.dooboolab.fluttersound;
 /*
  * Copyright 2018, 2019, 2020 Dooboolab.
  *
@@ -18,26 +17,21 @@ package com.dooboolab.fluttersound;
  */
 
 
+#ifndef FlautoPlayerManager_h
+#define FlautoPlayerManager_h
 
-import java.io.IOException;
+#import "FlautoManager.h"
 
-public interface RecorderInterface
+extern void FlautoPlayerReg(NSObject<FlutterPluginRegistrar>* registrar);
+
+@interface FlautoPlayerManager : FlautoManager
 {
-	public void _startRecorder
-		(
-			Integer numChannels,
-			Integer sampleRate,
-			Integer bitRate,
-			FlutterSoundCodec codec,
-			String path,
-			int audioSource,
-			Session session
-		)
-		throws
-		IOException;
-	public void _stopRecorder (  );
-	public boolean pauseRecorder( );
-	public boolean resumeRecorder(  );
-	public double getMaxAmplitude ();
-
 }
+extern FlautoPlayerManager* flautoPlayerManager; // Singleton
+
++ (void)registerWithRegistrar:(NSObject<FlutterPluginRegistrar>*)registrar;
+- (void)handleMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result;
+
+@end
+
+#endif //FlautoPlayerManager_h 

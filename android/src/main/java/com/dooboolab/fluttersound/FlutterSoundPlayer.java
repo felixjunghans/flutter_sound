@@ -21,25 +21,17 @@ package com.dooboolab.fluttersound;
 
 
 import android.content.Context;
-import android.media.AudioDeviceInfo;
 import android.media.MediaPlayer;
-import android.media.AudioManager;
-import android.media.MicrophoneInfo;
 import android.os.Build;
-import android.os.Environment;
 import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import android.media.AudioFocusRequest;
-import android.widget.MediaController;
-
-import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -49,153 +41,6 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
-
-class FlautoPlayerPlugin extends AudioSessionManager
-	implements MethodCallHandler
-{
-	final static String TAG = "FlutterPlayerPlugin";
-	static        Context            androidContext;
-	static        FlautoPlayerPlugin flautoPlayerPlugin; // singleton
-
-
-	public static void attachFlautoPlayer (
-		Context ctx, BinaryMessenger messenger
-	                                      )
-	{
-		assert ( flautoPlayerPlugin == null );
-		flautoPlayerPlugin = new FlautoPlayerPlugin ();
-		MethodChannel channel = new MethodChannel ( messenger, "com.dooboolab.flutter_sound_player" );
-		flautoPlayerPlugin.init(channel);
-		channel.setMethodCallHandler ( flautoPlayerPlugin );
-
-		androidContext = ctx;
-
-	}
-
-
-
-	FlautoPlayerPlugin getManager ()
-	{
-		return flautoPlayerPlugin;
-	}
-
-	@Override
-	public void onMethodCall ( final MethodCall call, final Result result )
-	{
-
-
-		FlutterSoundPlayer aPlayer = (FlutterSoundPlayer)getSession(call);
-		switch ( call.method )
-		{
-
-			case "initializeMediaPlayer":
-			{
-				aPlayer = new FlutterSoundPlayer();
-				initSession( call, aPlayer);
-				aPlayer.initializeFlautoPlayer ( call, result );
-
-			}
-			break;
-
-			case "releaseMediaPlayer":
-			{
-				aPlayer.releaseFlautoPlayer ( call, result );
-				//slots.set ( slotNo, null );
-			}
-			break;
-
-			case "initializeMediaPlayerWithUI":
-			{
-				aPlayer = new TrackPlayer (  );
-				initSession( call, aPlayer);
-				aPlayer.initializeFlautoPlayer ( call, result );
-			}
-			break;
-
-			case "setAudioFocus":
-			{
-				aPlayer.setAudioFocus( call, result );
-			}
-			break;
-
-
-			case "isDecoderSupported":
-			{
-				aPlayer.isDecoderSupported ( call, result );
-			}
-			break;
-
-			case "startPlayer":
-			{
-				aPlayer.startPlayer ( call, result );
-			}
-			break;
-
-			case "startPlayerFromTrack":
-			{
-				aPlayer.startPlayerFromTrack ( call, result );
-			}
-			break;
-
-
-			case "stopPlayer":
-			{
-				aPlayer.stopPlayer ( call, result );
-			}
-			break;
-
-			case "pausePlayer":
-			{
-				aPlayer.pausePlayer ( call, result );
-			}
-			break;
-
-			case "resumePlayer":
-			{
-				aPlayer.resumePlayer ( call, result );
-			}
-			break;
-
-			case "seekToPlayer":
-			{
-				aPlayer.seekToPlayer ( call, result );
-			}
-			break;
-
-			case "setVolume":
-			{
-				aPlayer.setVolume ( call, result );
-			}
-			break;
-
-			case "setSubscriptionDuration":
-			{
-				aPlayer.setSubscriptionDuration ( call, result );
-			}
-			break;
-
-			case "androidAudioFocusRequest":
-			{
-				aPlayer.androidAudioFocusRequest ( call, result );
-			}
-			break;
-
-			case "setActive":
-			{
-				aPlayer.setActive ( call, result );
-			}
-			break;
-
-			default:
-			{
-				result.notImplemented ();
-			}
-			break;
-		}
-	}
-
-}
-
 
 // SDK compatibility
 // -----------------
@@ -218,18 +63,19 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 
 	static boolean _isAndroidDecoderSupported[] = {
 		true, // DEFAULT
-		true, // aacADTS
-		true, // opusOGG
-		true, // opusCAF
-		true, // MP3
-		true, // vorbisOGG
+		true, // aacADTS				// OK
+		true,//Build.VERSION.SDK_INT >= 23, // opusOGG	// NOK
+		false, // opusCAF				// NOK
+		true, // MP3					// OK
+		true,//Build.VERSION.SDK_INT >= 23, // vorbisOGG// OK
 		true, // pcm16 // Really ???
-		true, // pcm16WAV
-		false, // pcm16AIFF
-		false, // pcm16CAF
-		true, // flac
-		true, // aacMP4
-		true, // amr
+		true, // pcm16WAV				// OK
+		false, // pcm16AIFF				// OK
+		false, // pcm16CAF				// NOK
+		true, // flac					// OK
+		true, // aacMP4					// OK
+		true, // amrNB					// OK
+		true, // amrWB					// OK
 	};
 
 
@@ -246,7 +92,8 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 		, "._pcm.caf"
 		, ".flac"
 		, ".mp4"
-		, ".amr"
+		, ".amr" // amrNB
+		, ".amr" // amrWB
 	};
 
 
@@ -266,7 +113,8 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 	int subsDurationMillis = 0;
 	MediaPlayer mediaPlayer                    = null;
 	private       Timer            mTimer      = new Timer ();
-	final private Handler          mainHandler = new Handler ();
+	final private Handler          mainHandler = new Handler (Looper.getMainLooper ());
+	boolean pauseMode;
 
 
 	static final String ERR_UNKNOWN           = "ERR_UNKNOWN";
@@ -274,17 +122,22 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 	static final String ERR_PLAYER_IS_PLAYING = "ERR_PLAYER_IS_PLAYING";
 
 
-	AudioSessionManager  getPlugin ()
+	FlautoManager getPlugin ()
 	{
-		return FlautoPlayerPlugin.flautoPlayerPlugin;
+		return FlautoPlayerManager.flautoPlayerPlugin;
 	}
 
 
 	void initializeFlautoPlayer ( final MethodCall call, final Result result )
 	{
 		boolean r = prepareFocus(call);
+		invokeMethodWithBoolean( "openAudioSessionCompleted", r );
+
 		if (r)
-		        result.success ( getPlayerState());
+		{
+
+			result.success(getPlayerState());
+		}
 		else
 			result.error ( ERR_UNKNOWN, ERR_UNKNOWN, "Failure to open session");
 
@@ -298,15 +151,18 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 		result.success ( getPlayerState() );
 	}
 
-	Boolean isPaused() { return !mediaPlayer.isPlaying () && mediaPlayer.getCurrentPosition () > 1;}
+	Boolean isPaused() { return mediaPlayer != null && (!mediaPlayer.isPlaying ()) && pauseMode;}
 
 	int getPlayerState()
 	{
 		if (mediaPlayer == null)
 			return PlayerState.isStopped.ordinal();
 		if (mediaPlayer.isPlaying())
+		{
+			assert(!pauseMode);
 			return PlayerState.isPlaying.ordinal();
-		return isPaused() ? PlayerState.isPaused.ordinal() : PlayerState.isStopped.ordinal();
+		}
+		return pauseMode ? PlayerState.isPaused.ordinal() : PlayerState.isStopped.ordinal();
 	}
 
 
@@ -376,8 +232,7 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 			/*
 			 * Detect when finish playing.
 			 */
-			mediaPlayer.setOnCompletionListener ( mp -> onCompletion(mp)
-			                                                      );
+			mediaPlayer.setOnCompletionListener ( mp -> onCompletion(mp) );
 			mediaPlayer.setOnErrorListener(this);
 
 			mediaPlayer.prepare ();
@@ -388,7 +243,7 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 			result.error ( ERR_UNKNOWN, ERR_UNKNOWN, e.getMessage () );
 			return;
 		}
-		result.success ( getPlayerState() );
+		result.success ( getPlayerState());
 	}
 
 	public void startPlayerFromTrack ( final MethodCall call, final Result result )
@@ -396,7 +251,8 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 		result.error ( ERR_UNKNOWN, ERR_UNKNOWN, "Must be initialized With UI" );
 	}
 
-	public boolean onError(MediaPlayer mp, int what, int extra) {
+	public boolean onError(MediaPlayer mp, int what, int extra)
+	{
 	// ... react appropriately ...
 	// The MediaPlayer has moved to the Error state, must be reset!
 	return false;
@@ -410,60 +266,85 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 			 * Reset player.
 			 */
 			Log.d(TAG, "Playback completed.");
+			assert(mp == mediaPlayer);
 			mTimer.cancel();
 			if (mp.isPlaying()) {
 				mp.stop();
 			}
 			mp.reset();
 			mp.release();
-			mediaPlayer = (null);
-			invokeMethodWithInteger("audioPlayerFinishedPlaying", getPlayerState());
+			mediaPlayer = null;
+			pauseMode = false;
+			assert(getPlayerState() == 0);
+			invokeMethodWithInteger("audioPlayerFinishedPlaying", getPlayerState() );
 	}
 
 	// Listener called when media player has completed preparation.
 	private void onPrepared(MediaPlayer mp, String path)
 	{
-		Log.d(TAG, "mediaPlayer prepared and start");
+		Log.d(TAG, "mediaPlayer prepared and started");
 		mp.start();
 
+		mainHandler.post(new Runnable()
+		{
+			@Override
+			public void run() {
+				long duration = 0;
+				try
+				{
+					 duration = mp.getDuration();
+				} catch(Exception e)
+				{
+					System.out.println(e.toString());
+				}
+				invokeMethodWithInteger("startPlayerCompleted", (int) duration);
+			}
+		});
 		/*
 		 * Set timer task to send event to RN.
 		 */
 		TimerTask mTask = new TimerTask() {
 			@Override
 			public void run() {
-				try {
-					long position = mp.getCurrentPosition();
-					long duration = mp.getDuration();
-					if (position > duration)
+					mainHandler.post(new Runnable()
 					{
-						assert(position <= duration);
-					}
-
-					Map<String, Object> dic = new HashMap<String, Object> ();
-					dic.put ( "position", position );
-					dic.put ( "duration", duration );
-					dic.put ( "playerStatus", getPlayerState() );
-
-					mainHandler.post(new Runnable() {
 						@Override
-						public void run() {
-							invokeMethodWithMap("updateProgress", dic);
+						public void run()
+						{
+							try {
+
+								long position = mp.getCurrentPosition();
+								long duration = mp.getDuration();
+								if (position > duration)
+								{
+									assert(position <= duration);
+								}
+
+								Map<String, Object> dic = new HashMap<String, Object> ();
+								dic.put ( "position", position );
+								dic.put ( "duration", duration );
+								dic.put ( "playerStatus", getPlayerState() );
+
+								invokeMethodWithMap("updateProgress", dic);
+							} catch (Exception e)
+							{
+								Log.d(TAG, "Exception: " + e.toString());
+								stop();
+							}
 						}
 					});
 
 
-				} catch (Exception e) {
-					Log.d(TAG, "Exception: " + e.toString());
-				}
 			}
 		};
 
-		mTimer.schedule(mTask, 0, subsDurationMillis);
+		if (subsDurationMillis > 0)
+			mTimer.schedule(mTask, 0, subsDurationMillis);
 	}
 
 	void stop()
 	{
+		pauseMode = false;
 		mTimer.cancel ();
 
 		if ( mediaPlayer == null )
@@ -476,7 +357,7 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 			mediaPlayer.stop ();
 			mediaPlayer.reset ();
 			mediaPlayer.release ();
-			mediaPlayer = ( null );
+			mediaPlayer =  null ;
 		}
 		catch ( Exception e )
 		{
@@ -496,11 +377,11 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 	{
 		int     _codec = call.argument ( "codec" );
 		boolean b      = _isAndroidDecoderSupported[ _codec ];
-		if ( Build.VERSION.SDK_INT < 23 )
+		//if ( Build.VERSION.SDK_INT < 23 )
 		{
-			if ( ( _codec == CODEC_OPUS ) || ( _codec == CODEC_VORBIS ) )
+			//if ( ( _codec == CODEC_OPUS ) || ( _codec == CODEC_VORBIS ) )
 			{
-				b = false;
+				//b = false;
 			}
 		}
 		result.success (b );
@@ -517,6 +398,7 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 		try
 		{
 			mediaPlayer.pause ();
+			pauseMode = true;
 			result.success ( getPlayerState());
 		}
 		catch ( Exception e )
@@ -540,10 +422,10 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 			result.error ( ERR_PLAYER_IS_PLAYING, ERR_PLAYER_IS_PLAYING, ERR_PLAYER_IS_PLAYING );
 			return;
 		}
-
+		pauseMode = false;
 		try
 		{
-			mediaPlayer.seekTo ( mediaPlayer.getCurrentPosition () );
+			// Is it really good ? // mediaPlayer.seekTo ( mediaPlayer.getCurrentPosition () );
 			mediaPlayer.start ();
 			result.success ( getPlayerState());
 		}
@@ -646,7 +528,52 @@ public class FlutterSoundPlayer extends Session implements MediaPlayer.OnErrorLi
 		result.success (getPlayerState() );
 	}
 
+	void getProgress ( final MethodCall call, final Result result )
+	{
+		long position = 0;
+		long duration = 0;
+		if ( mediaPlayer != null ) {
+			 position = mediaPlayer.getCurrentPosition();
+			 duration = mediaPlayer.getDuration();
+		}
+		if (position > duration)
+		{
+			assert(position <= duration);
+		}
 
+		Map<String, Object> dic = new HashMap<String, Object> ();
+		dic.put ( "position", position );
+		dic.put ( "duration", duration );
+		dic.put ( "playerStatus", getPlayerState() );
+		dic.put ( "slotNo", slotNo);
+		result.success(dic);
+	}
+
+	void nowPlaying ( final MethodCall call, final Result result )
+	{
+		// TODO
+		result.success (getPlayerState() );
+	}
+
+
+	void setUIProgressBar ( final MethodCall call, final Result result )
+	{
+		// TODO
+		result.success (getPlayerState() );
+
+	}
+
+	void getResourcePath ( final MethodCall call, final Result result )
+	{
+		// TODO
+		result.success ("");
+
+	}
+
+	void getPlayerState ( final MethodCall call, final Result result )
+	{
+		result.success (getPlayerState());
+	}
 }
 
 //-------------------------------------------------------------------------------------------------------------

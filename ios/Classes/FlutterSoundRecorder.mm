@@ -26,8 +26,6 @@
 
 
 #import <Foundation/Foundation.h>
-#import "AudioRecorder.h"
-//#import "AudioRecorderEngine.h"
 
 #import "FlutterSoundRecorder.h"
 
@@ -43,7 +41,7 @@ public:
         virtual NSNumber* recorderProgress() = 0;
         virtual NSNumber* dbPeakProgress() = 0;
 
-        double maxAmplitude = 0;
+        int16_t maxAmplitude = 0;
 };
 
 
@@ -52,66 +50,83 @@ class AudioRecorderEngine : public AudioRecInterface
 {
 private:
         AVAudioEngine* engine;
-        AVAudioMixerNode* mixerNode;
-        AVAudioFormat* tapFormat;
-        AVAudioFile* audioFile;
-        AVAudioInputNode* inputNode;
-        AVAudioOutputNode* outputNode;
-        AVAudioFormat* inputFormat;
+        NSFileHandle * fileHandle;
+        AVAudioConverterInputStatus inputStatus = AVAudioConverterInputStatus_NoDataNow;
+        long dateCumul = 0;
+        long previousTS;
+
 public:
-        /* ctor */ AudioRecorderEngine(t_CODEC coder, NSString* path, NSMutableDictionary* audioSettings)
+
+
+       /* ctor */ AudioRecorderEngine(t_CODEC coder, NSString* path, NSMutableDictionary* audioSettings, Session* session)
         {
                 engine = [[AVAudioEngine alloc] init];
-                mixerNode = [engine mainMixerNode];
-                inputNode = [engine inputNode];
-                outputNode = [engine outputNode];
-                inputFormat = [inputNode inputFormatForBus: 0];
-                [engine connect:inputNode to: mixerNode format: inputFormat];
-                [engine disconnectNodeInput:outputNode];
-                NSURL *fileURL = [[NSURL alloc] initFileURLWithPath:path];
-                tapFormat = [mixerNode outputFormatForBus: 0];
-                NSDictionary* settings = [tapFormat settings];
-                NSNumber* floatKey =  settings[@"AVLinearPCMIsFloatKey"] ;
-                BOOL isFloat = ([floatKey intValue] == 1);
-                
-                
-                //[settings setValue: [NSNumber numberWithInt: kAudioFormatLinearPCM] forKey:@"AVFormatIDKey"];
-                
-                //[settings setValue: audioSettings[ @"AVSampleRateKey"] forKey:@"AVSampleRateKey"];
-                //[settings setValue: audioSettings[ @"AVNumberOfChannelsKey"] forKey:@"AVNumberOfChannelsKey"];
-                //AVAudioCommonFormat* outputFormat =   [ AVAudioCommonFormat   initWithCommonFormat: AVAudioPCMFormatInt16 sampleRate:[AVAudioSession sharedInstance].sampleRate channels:AVAudioChannelCount(1) interleaved:false];
-                //NSMutableDictionary *audioSettings2 = [NSMutableDictionary dictionaryWithObjectsAndKeys:
-                                         //[NSNumber numberWithFloat: [AVAudioSession sharedInstance].sampleRate],AVSampleRateKey,
-                                         //[NSNumber numberWithInt: kAudioFormatLinearPCM ],AVFormatIDKey,
-                                         //[NSNumber numberWithInt: 1 ],AVNumberOfChannelsKey,
-                                         //[NSNumber numberWithInt: ],AVEncoderAudioQualityKey,
-                                         //nil];
-               //AVAudioPCMBuffer* buffer = [[AVAudioPCMBuffer alloc]initWithPCMFormat:inputFormat frameCapacity: engine.manualRenderingMaximumFrameCount ];
-                 
-                
-                
-                
-                audioFile = [[AVAudioFile alloc] initForWriting:fileURL settings: settings/*audioSettings2*/ error:nil];
-                         
-                [mixerNode installTapOnBus:0 bufferSize:4096 format: tapFormat block:
-                        ^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when)
+                dateCumul = 0;
+                previousTS = 0;
+
+                AVAudioInputNode* inputNode = [engine inputNode];
+                AVAudioFormat* inputFormat = [inputNode outputFormatForBus: 0];
+                NSNumber* nbChannels = audioSettings [AVNumberOfChannelsKey];
+                NSNumber* sampleRate = audioSettings [AVSampleRateKey];
+                AVAudioFormat* recordingFormat = [[AVAudioFormat alloc] initWithCommonFormat: AVAudioPCMFormatInt16 sampleRate: sampleRate.doubleValue channels: nbChannels.integerValue interleaved: YES];
+                AVAudioConverter* converter = [[AVAudioConverter alloc]initFromFormat:inputFormat toFormat:recordingFormat];
+                NSFileManager* fileManager = [NSFileManager defaultManager];
+                NSURL* fileURL = nil;
+                if (path != nil && path != [NSNull null])
+                {
+                        BOOL success = [fileManager removeItemAtPath:path error:nil];
+                        [fileManager createFileAtPath: path contents:nil attributes:nil];
+                        fileURL = [[NSURL alloc] initFileURLWithPath: path];
+                        fileHandle = [NSFileHandle fileHandleForWritingAtPath: path];
+                } else
+                {
+                        fileHandle = nil;
+                }
+
+
+                [inputNode installTapOnBus: 0 bufferSize: 2048 format: inputFormat block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when)
+                {
+                        inputStatus = AVAudioConverterInputStatus_HaveData ;
+                        AVAudioPCMBuffer* convertedBuffer = [[AVAudioPCMBuffer alloc]initWithPCMFormat:recordingFormat frameCapacity: [buffer frameCapacity]];
+
+        
+                        AVAudioConverterInputBlock inputBlock = ^AVAudioBuffer*(AVAudioPacketCount inNumberOfPackets, AVAudioConverterInputStatus *outStatus)
                         {
-                                //NSLog(@"writing");
-                                [audioFile writeFromBuffer: buffer error:nil];
-                                if (isFloat)
+                                *outStatus = inputStatus;
+                                inputStatus =  AVAudioConverterInputStatus_NoDataNow;
+                                return buffer;
+                        };
+                        BOOL r = [converter convertToBuffer: convertedBuffer error: nil withInputFromBlock: inputBlock];
+                        int n = [convertedBuffer frameLength];
+                        int16_t *const  bb = [convertedBuffer int16ChannelData][0];
+                        NSData* b = [[NSData alloc] initWithBytes: bb length: n * 2 ];
+                        if (n > 0)
+                        {
+                                if (fileHandle != nil)
                                 {
-                                        float*  _Nonnull  pt = *[buffer floatChannelData];
-                                        for (int i = 0; i < [buffer frameLength]; ++pt, ++i)
+                                        [fileHandle writeData: b];
+                                } else
+                                {
+                                        //NSDictionary* dic = [[NSMutableDictionary alloc] init];
+                                        //[dic setValue: b forKey: @"recordingData"];
+                                        NSDictionary* dico = @{ @"slotNo": [NSNumber numberWithInt: [session getSlotNo]], @"recordingData": b,};
+                                        [session invokeMethod: @"recordingData" dico: dico];
+                                }
+                                
+                                int16_t* pt = [convertedBuffer int16ChannelData][0];
+                                for (int i = 0; i < [buffer frameLength]; ++pt, ++i)
+                                {
+                                        short curSample = *pt;
+                                        if ( curSample > maxAmplitude )
                                         {
-                                                double v = (double)(*pt);
-                                                if (v > maxAmplitude)
-                                                        maxAmplitude = v;
+                                                maxAmplitude = curSample;
                                         }
+                        
                                 }
                         }
-                ];
-           }
-        
+                }];
+        }
+         
         /* dtor */virtual ~AudioRecorderEngine()
         {
         
@@ -120,38 +135,71 @@ public:
         virtual void startRecorder(FlutterSoundRecorder* rec)
         {
                 [engine startAndReturnError: nil];
+                previousTS = CACurrentMediaTime() * 1000;
         }
         
         virtual void stopRecorder()
         {
                 [engine stop];
-                audioFile = nil;
+                [fileHandle closeFile];
+                if (previousTS != 0)
+                {
+                        dateCumul += CACurrentMediaTime() * 1000 - previousTS;
+                        previousTS = 0;
+                }
                 engine = nil;
         }
         
         virtual void resumeRecorder()
         {
                 [engine startAndReturnError: nil];
+                previousTS = CACurrentMediaTime() * 1000;
          
         }
         
         virtual void pauseRecorder()
         {
-                //[engine stop];
                 [engine pause];
+                if (previousTS != 0)
+                {
+                        dateCumul += CACurrentMediaTime() * 1000 - previousTS;
+                        previousTS = 0;
+                }
          
         }
         
         NSNumber* recorderProgress()
         {
-                return 0;
+                long r = dateCumul;
+                if (previousTS != 0)
+                {
+                        r += CACurrentMediaTime() * 1000 - previousTS;
+                }
+                return [NSNumber numberWithInt: r];
         }
         virtual NSNumber* dbPeakProgress()
         {
-                double r = 100*maxAmplitude;
-		maxAmplitude = 0;
-		return [NSNumber numberWithDouble: r];
+                double max = (double)maxAmplitude;
+                maxAmplitude = 0;
+                if (max == 0.0)
+                {
+                        // if the microphone is off we get 0 for the amplitude which causes
+                        // db to be infinite.
+                        return [NSNumber numberWithDouble: 0.0];
+                }
+                
+        
+                // Calculate db based on the following article.
+                // https://stackoverflow.com/questions/10655703/what-does-androids-getmaxamplitude-function-for-the-mediarecorder-actually-gi
+                //
+                double ref_pressure = 51805.5336;
+                double p = max / ref_pressure;
+                double p0 = 0.0002;
+                double l = log10(p / p0);
 
+                double db = 20.0 * l;
+
+                return [NSNumber numberWithDouble: db];
         }
 
 
@@ -232,7 +280,7 @@ static bool _isIosEncoderSupported [] =
 		true, // opusCAF
 		false, // MP3
 		false, // vorbisOGG
-		false, // pcm16
+		true, // pcm16
 		true, // pcm16WAV
 		false, // pcm16AIFF
 		true, // pcm16CAF
@@ -426,23 +474,17 @@ AVAudioSessionPort tabSessionPort [] =
                             forKey:AVEncoderBitRateKey];
             }
 
-  /*
-          // set volume default to speaker
-          UInt32 doChangeDefaultRoute = 1;
-          AudioSessionSetProperty(kAudioSessionProperty_OverrideCategoryDefaultToSpeaker, sizeof(doChangeDefaultRoute), &doChangeDefaultRoute);
-
-          // set up for bluetooth microphone input
-          UInt32 allowBluetoothInput = 1;
-          AudioSessionSetProperty (kAudioSessionProperty_OverrideCategoryEnableBluetoothInput,sizeof (allowBluetoothInput),&allowBluetoothInput);
-          //if (path == NULL)
+          if(coder == pcm16)
           {
-                        //audioFileURL = [NSURL fileURLWithPath:[ [self GetDirectoryOfType_FlutterSound: NSCachesDirectory]
-                        //stringByAppendingString:defaultExtensions[coder] ]];
-          }
-   */
-          if(formats[coder] == 0)
-          {
-                audioRec = new AudioRecorderEngine(coder, path, audioSettings);
+                if (numChannels != 1)
+                {
+                              [FlutterError
+                                errorWithCode:@"FlutterSoundRecorder"
+                                message:@"Raw PCM is supported with only 1 number of channels"
+                                details:nil];
+                                return;
+                }
+                audioRec = new AudioRecorderEngine(coder, path, audioSettings, self);
           } else
           {
                 audioRec = new avAudioRec( path, audioSettings);

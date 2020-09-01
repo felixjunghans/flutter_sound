@@ -25,7 +25,7 @@ import android.util.Log;
 
 import java.io.IOException;
 
-public class FlutterSoundMediaRecorder
+public class RecorderMediaRecorder
 	implements RecorderInterface
 {
 	final static String             TAG                = "SoundMediaRecorder";
@@ -42,7 +42,7 @@ public class FlutterSoundMediaRecorder
 		0, // aiff
 		0, // pcmCAF
 		0, // flac
-		0, // aacMP4
+		MediaRecorder.AudioEncoder.AAC, // aacMP4
 		MediaRecorder.AudioEncoder.AMR_NB,
 		MediaRecorder.AudioEncoder.AMR_WB,
 	};
@@ -61,7 +61,7 @@ public class FlutterSoundMediaRecorder
 		, 0 // aiff
 		, 0 // pcmCAF
 		, 0 // flac
-		, 0 // aacMP4
+		, MediaRecorder.OutputFormat.MPEG_4 // aacMP4
 		, MediaRecorder.OutputFormat.AMR_NB
 		, MediaRecorder.OutputFormat.AMR_WB
 	};
@@ -95,12 +95,12 @@ public class FlutterSoundMediaRecorder
 			Integer bitRate,
 			FlutterSoundCodec codec,
 			String path,
-			int audioSource
+			int audioSource,
+			Session session
                 )
 		throws
 		IOException
 	{
-		final int v = Build.VERSION.SDK_INT;
 		// The caller must be allowed to specify its path. We must not change it here
 		// path = PathUtils.getDataDirectory(reg.context()) + "/" + path; // SDK 29 :
 		// you may not write in getExternalStorageDirectory()
